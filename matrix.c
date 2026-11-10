@@ -1,53 +1,20 @@
-Claude
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Matrix · C
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include <time.h>
- 
+
 #define MAX 20          // compile-time upper bound for the arrays
- 
+#define NUM_THREADS 10  // fixed number of worker threads
+
 int N;                  // actual matrix size (from command line)
- 
+
 int matA[MAX][MAX];
 int matB[MAX][MAX];
- 
+
 int matSumResult[MAX][MAX];
 int matDiffResult[MAX][MAX];
 int matProductResult[MAX][MAX];
- 
-typedef struct {
-    int row;
-    int col;
-} Cell;
- 
+
 void fillMatrix(int matrix[MAX][MAX]) {
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
@@ -55,7 +22,7 @@ void fillMatrix(int matrix[MAX][MAX]) {
         }
     }
 }
- 
+
 void printMatrix(int matrix[MAX][MAX]) {
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
@@ -65,42 +32,57 @@ void printMatrix(int matrix[MAX][MAX]) {
     }
     printf("\n");
 }
- 
-// Sets one cell of matSumResult to matA + matB at that cell.
-void* computeSum(void* args) {
-    Cell* c = (Cell*)args;
-    int r = c->row, col = c->col;
-    free(c);
-    matSumResult[r][col] = matA[r][col] + matB[r][col];
-    return NULL;
-}
- 
-// Sets one cell of matDiffResult to matA - matB at that cell.
-void* computeDiff(void* args) {
-    Cell* c = (Cell*)args;
-    int r = c->row, col = c->col;
-    free(c);
-    matDiffResult[r][col] = matA[r][col] - matB[r][col];
-    return NULL;
-}
- 
-// Sets one cell of matProductResult to (row of A) . (column of B).
-void* computeProduct(void* args) {
-    Cell* c = (Cell*)args;
-    int r = c->row, col = c->col;
-    free(c);
-    int sum = 0;
-    for (int k = 0; k < N; k++) {
-        sum += matA[r][k] * matB[k][col];
+
+// Thread id handles rows id, id + NUM_THREADS, id + 2*NUM_THREADS, ...
+// Sets each cell in those rows of matSumResult to matA + matB.
+void computeSum(int id) {
+    for (int i = id; i < N; i += NUM_THREADS) {
+        for (int j = 0; j < N; j++) {
+            matSumResult[i][j] = matA[i][j] + matB[i][j];
+        }
     }
-    matProductResult[r][col] = sum;
+}
+
+// Same row partitioning; sets cells of matDiffResult to matA - matB.
+void computeDiff(int id) {
+    for (int i = id; i < N; i += NUM_THREADS) {
+        for (int j = 0; j < N; j++) {
+            matDiffResult[i][j] = matA[i][j] - matB[i][j];
+        }
+    }
+}
+
+// Same row partitioning; sets cells of matProductResult to the
+// inner product of a row of matA and a column of matB.
+void computeProduct(int id) {
+    for (int i = id; i < N; i += NUM_THREADS) {
+        for (int j = 0; j < N; j++) {
+            int sum = 0;
+            for (int k = 0; k < N; k++) {
+                sum += matA[i][k] * matB[k][j];
+            }
+            matProductResult[i][j] = sum;
+        }
+    }
+}
+
+// Each of the 10 threads runs this. It receives its thread number
+// (malloc'd), frees it, then does its share of all three operations.
+void* worker(void* args) {
+    int id = *(int*)args;
+    free(args);
+
+    computeSum(id);
+    computeDiff(id);
+    computeProduct(id);
     return NULL;
 }
- 
-// Spawns 3 * N * N threads: one per cell for each of the 3 operations.
+
+// Spawns exactly NUM_THREADS (10) threads. Each thread computes its own
+// set of rows for the sum, difference, and product matrices.
 int main(int argc, char* argv[]) {
     srand(time(0));  // Do Not Remove.
- 
+
     // 0. Get the matrix size from the command line
     if (argc != 2) {
         printf("Usage: %s <matrix size>\n", argv[0]);
@@ -111,48 +93,32 @@ int main(int argc, char* argv[]) {
         printf("Size must be between 1 and %d\n", MAX);
         return 1;
     }
- 
+
     // 1. Fill the matrices with random values.
     fillMatrix(matA);
     fillMatrix(matB);
- 
+
     // 2. Print the initial matrices.
     printf("Matrix A:\n");
     printMatrix(matA);
     printf("Matrix B:\n");
     printMatrix(matB);
- 
-    // 3. Create pthread_t objects for our threads.
-    pthread_t sumThreads[MAX][MAX];
-    pthread_t diffThreads[MAX][MAX];
-    pthread_t prodThreads[MAX][MAX];
- 
-    // 4. Create a thread for each cell of each operation.
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            Cell* c1 = malloc(sizeof(Cell));
-            c1->row = i; c1->col = j;
-            pthread_create(&sumThreads[i][j], NULL, computeSum, c1);
- 
-            Cell* c2 = malloc(sizeof(Cell));
-            c2->row = i; c2->col = j;
-            pthread_create(&diffThreads[i][j], NULL, computeDiff, c2);
- 
-            Cell* c3 = malloc(sizeof(Cell));
-            c3->row = i; c3->col = j;
-            pthread_create(&prodThreads[i][j], NULL, computeProduct, c3);
-        }
+
+    // 3. Create exactly 10 pthread_t objects.
+    pthread_t threads[NUM_THREADS];
+
+    // 4. Create the 10 threads, passing each its thread number.
+    for (int t = 0; t < NUM_THREADS; t++) {
+        int* id = malloc(sizeof(int));
+        *id = t;
+        pthread_create(&threads[t], NULL, worker, id);
     }
- 
+
     // 5. Wait for all threads to finish.
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            pthread_join(sumThreads[i][j], NULL);
-            pthread_join(diffThreads[i][j], NULL);
-            pthread_join(prodThreads[i][j], NULL);
-        }
+    for (int t = 0; t < NUM_THREADS; t++) {
+        pthread_join(threads[t], NULL);
     }
- 
+
     // 6. Print the results.
     printf("Results:\n");
     printf("Sum:\n");
